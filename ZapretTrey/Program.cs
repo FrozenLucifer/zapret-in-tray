@@ -5,43 +5,43 @@ namespace ZapretTrey;
 
 class TrayBatLauncher : ApplicationContext
 {
-    private NotifyIcon trayIcon;
-    private string baseDir;
-    private string zapretDir;
-    private string serviceBatPath;
-    private string logFilePath;
-    private string repoUrl = "https://github.com/Flowseal/zapret-discord-youtube";
-    private System.Windows.Forms.Timer updateTimer;
+    private readonly NotifyIcon _trayIcon;
+    private readonly string _baseDir;
+    private readonly string _zapretDir;
+    private readonly string _serviceBatPath;
+    private readonly string _logFilePath;
+    private readonly string _repoUrl = "https://github.com/Flowseal/zapret-discord-youtube";
+    private readonly System.Windows.Forms.Timer _updateTimer;
 
-    public TrayBatLauncher()
+    private TrayBatLauncher()
     {
-        baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        zapretDir = Path.Combine(baseDir, "zapret-discord");
-        serviceBatPath = Path.Combine(zapretDir, "service.bat");
-        logFilePath = Path.Combine(baseDir, "tray_errors.log");
+        _baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        _zapretDir = Path.Combine(_baseDir, "zapret-discord");
+        _serviceBatPath = Path.Combine(_zapretDir, "service.bat");
+        _logFilePath = Path.Combine(_baseDir, "tray_errors.log");
         
-        if (!File.Exists(logFilePath))
-            File.WriteAllText(logFilePath, "");
+        if (!File.Exists(_logFilePath))
+            File.WriteAllText(_logFilePath, "");
 
         SetAutoStart();
         EnsureZapretExistsAsync().GetAwaiter().GetResult();
         
-        trayIcon = new NotifyIcon
+        _trayIcon = new NotifyIcon
         {
-            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTrey.Resources.tray.ico")!),
+            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTrey.Resources.tray.ico") ?? throw new InvalidOperationException()),
             ContextMenuStrip = BuildMenu(),
             Visible = true,
             Text = "General BAT launcher"
         };
 
-        updateTimer = new System.Windows.Forms.Timer();
-        updateTimer.Interval = 24 * 60 * 60 * 1000; // 24 часа
-        updateTimer.Tick += async (s, e) => await CheckForUpdatesAsync(silent: true);
-        updateTimer.Start();
+        _updateTimer = new System.Windows.Forms.Timer();
+        _updateTimer.Interval = 24 * 60 * 60 * 1000;
+        _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync(silent: true);
+        _updateTimer.Start();
 
         var startupTimer = new System.Windows.Forms.Timer();
         startupTimer.Interval = 30000;
-        startupTimer.Tick += async (s, e) =>
+        startupTimer.Tick += async (_, _) =>
         {
             await CheckForUpdatesAsync(silent: true);
             startupTimer.Stop();
@@ -54,10 +54,10 @@ class TrayBatLauncher : ApplicationContext
     {
         try
         {
-            if (File.Exists(serviceBatPath))
+            if (File.Exists(_serviceBatPath))
                 return;
 
-            Directory.CreateDirectory(zapretDir);
+            Directory.CreateDirectory(_zapretDir);
 
             ShowSilent("Zapret не найден. Идёт первичная загрузка…", "Инициализация");
 
@@ -67,7 +67,7 @@ class TrayBatLauncher : ApplicationContext
 
             Directory.CreateDirectory(tempPath);
 
-            string zipUrl = $"{repoUrl}/archive/refs/heads/main.zip";
+            string zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
             string zipPath = Path.Combine(tempPath, "zapret.zip");
 
             using (var http = new HttpClient())
@@ -88,7 +88,7 @@ class TrayBatLauncher : ApplicationContext
             foreach (var file in Directory.GetFiles(extractedDir, "*", SearchOption.AllDirectories))
             {
                 var rel = file[(extractedDir.Length + 1)..];
-                var dst = Path.Combine(zapretDir, rel);
+                var dst = Path.Combine(_zapretDir, rel);
 
                 var dstDir = Path.GetDirectoryName(dst);
                 if (!Directory.Exists(dstDir))
@@ -112,7 +112,7 @@ class TrayBatLauncher : ApplicationContext
         try
         {
             File.AppendAllText(
-                logFilePath,
+                _logFilePath,
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {context}\n{ex}\n\n"
             );
         }
@@ -123,7 +123,7 @@ class TrayBatLauncher : ApplicationContext
 
     private void OpenLogs()
     {
-        if (!File.Exists(logFilePath))
+        if (!File.Exists(_logFilePath))
         {
             ShowSilent("Файл логов пока не создан", "Логи");
             return;
@@ -131,7 +131,7 @@ class TrayBatLauncher : ApplicationContext
 
         Process.Start(new ProcessStartInfo
         {
-            FileName = logFilePath,
+            FileName = _logFilePath,
             UseShellExecute = true
         });
     }
@@ -147,18 +147,18 @@ class TrayBatLauncher : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
 
         var serviceItem = new ToolStripMenuItem("Service");
-        serviceItem.DropDownItems.Add("Запуск Service.bat", null, (_, __) => RunServiceBat());
-        serviceItem.DropDownItems.Add("Проверить обновления", null, async (_, __) => await CheckForUpdatesAsync(silent: false));
-        serviceItem.DropDownItems.Add("Обновить списки", null, async (_, __) => await UpdateListsAsync());
+        serviceItem.DropDownItems.Add("Запуск Service.bat", null, (_, _) => RunServiceBat());
+        serviceItem.DropDownItems.Add("Проверить обновления", null, async (_, _) => await CheckForUpdatesAsync(silent: false));
+        serviceItem.DropDownItems.Add("Обновить списки", null, async (_, _) => await UpdateListsAsync());
         menu.Items.Add(serviceItem);
 
-        menu.Items.Add("Сбросить кеш Discord", null, (_, __) => ClearDiscordCache());
+        menu.Items.Add("Сбросить кеш Discord", null, (_, _) => ClearDiscordCache());
 
         menu.Items.Add(new ToolStripSeparator());
 
         var autostartItem = new ToolStripMenuItem("Автозапуск");
         autostartItem.Checked = IsAutoStartEnabled();
-        autostartItem.Click += (s, e) =>
+        autostartItem.Click += (s, _) =>
         {
             var item = s as ToolStripMenuItem;
 
@@ -169,8 +169,8 @@ class TrayBatLauncher : ApplicationContext
             }
         };
         menu.Items.Add(autostartItem);
-        menu.Items.Add("Открыть логи", null, (_, __) => OpenLogs());
-        menu.Items.Add("Выход", null, (_, __) => Exit());
+        menu.Items.Add("Открыть логи", null, (_, _) => OpenLogs());
+        menu.Items.Add("Выход", null, (_, _) => Exit());
 
         return menu;
     }
@@ -180,13 +180,13 @@ class TrayBatLauncher : ApplicationContext
         root.DropDownItems.Clear();
 
         var files = Directory
-            .GetFiles(zapretDir, "general*.bat", SearchOption.TopDirectoryOnly)
+            .GetFiles(_zapretDir, "general*.bat", SearchOption.TopDirectoryOnly)
             .OrderBy(f => f);
 
         foreach (var file in files)
         {
             var name = Path.GetFileName(file);
-            root.DropDownItems.Add(name, null, (_, __) => RunBat(name));
+            root.DropDownItems.Add(name, null, (_, _) => RunBat(name));
         }
 
         if (!files.Any())
@@ -195,20 +195,20 @@ class TrayBatLauncher : ApplicationContext
 
     private void RunBat(string name)
     {
-        var path = Path.Combine(zapretDir, name);
+        var path = Path.Combine(_zapretDir, name);
         if (!File.Exists(path)) return;
 
         Process.Start(new ProcessStartInfo
         {
             FileName = path,
-            WorkingDirectory = baseDir,
+            WorkingDirectory = _baseDir,
             UseShellExecute = true
         });
     }
 
     private void RunServiceBat()
     {
-        if (!File.Exists(serviceBatPath))
+        if (!File.Exists(_serviceBatPath))
         {
             ShowSilent("Файл service.bat не найден", "Ошибка");
             return;
@@ -216,8 +216,8 @@ class TrayBatLauncher : ApplicationContext
 
         Process.Start(new ProcessStartInfo
         {
-            FileName = serviceBatPath,
-            WorkingDirectory = zapretDir,
+            FileName = _serviceBatPath,
+            WorkingDirectory = _zapretDir,
             UseShellExecute = true
         });
     }
@@ -226,13 +226,13 @@ class TrayBatLauncher : ApplicationContext
     {
         try
         {
-            if (!File.Exists(serviceBatPath))
+            if (!File.Exists(_serviceBatPath))
                 return;
 
             var process = new Process();
             process.StartInfo.FileName = "cmd.exe";
-            process.StartInfo.Arguments = $"/c \"\"{serviceBatPath}\" check_updates soft\"";
-            process.StartInfo.WorkingDirectory = zapretDir;
+            process.StartInfo.Arguments = $"/c \"\"{_serviceBatPath}\" check_updates soft\"";
+            process.StartInfo.WorkingDirectory = _zapretDir;
             process.StartInfo.CreateNoWindow = silent;
             process.StartInfo.UseShellExecute = false;
             process.StartInfo.RedirectStandardOutput = true;
@@ -241,7 +241,6 @@ class TrayBatLauncher : ApplicationContext
             var output = await process.StandardOutput.ReadToEndAsync();
             await process.WaitForExitAsync();
 
-            // Проверяем вывод на наличие информации о новой версии
             if (!silent && output.Contains("New version available"))
             {
                 var result = AskSilent("Доступна новая версия. Скачать и обновить?", "Обновление");
@@ -267,27 +266,25 @@ class TrayBatLauncher : ApplicationContext
     {
         try
         {
-            if (!File.Exists(serviceBatPath))
+            if (!File.Exists(_serviceBatPath))
                 return;
 
             var process = new Process();
             process.StartInfo.FileName = "cmd.exe";
-            process.StartInfo.Arguments = $"/c \"\"{serviceBatPath}\"\"";
-            process.StartInfo.WorkingDirectory = zapretDir;
+            process.StartInfo.Arguments = $"/c \"\"{_serviceBatPath}\"\"";
+            process.StartInfo.WorkingDirectory = _zapretDir;
             process.StartInfo.CreateNoWindow = true;
             process.StartInfo.UseShellExecute = false;
             process.StartInfo.RedirectStandardInput = true;
 
             process.Start();
 
-            // Отправляем команды в интерактивном режиме
-            using (StreamWriter sw = process.StandardInput)
+            await using (var sw = process.StandardInput)
             {
                 if (sw.BaseStream.CanWrite)
                 {
-                    // Выбираем пункт 8 для обновления списков
                     await sw.WriteLineAsync("8");
-                    await sw.WriteLineAsync(); // Нажимаем Enter после обновления
+                    await sw.WriteLineAsync();
                 }
             }
 
@@ -313,7 +310,7 @@ class TrayBatLauncher : ApplicationContext
 
             Directory.CreateDirectory(tempPath);
 
-            string zipUrl = $"{repoUrl}/archive/refs/heads/main.zip";
+            string zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
             string zipPath = Path.Combine(tempPath, "update.zip");
 
             using (var httpClient = new HttpClient())
@@ -324,7 +321,7 @@ class TrayBatLauncher : ApplicationContext
                 if (!response.IsSuccessStatusCode)
                     throw new Exception($"Ошибка загрузки: {response.StatusCode}");
 
-                using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
                     await response.Content.CopyToAsync(fileStream);
                 }
@@ -341,13 +338,11 @@ class TrayBatLauncher : ApplicationContext
             foreach (var file in Directory.GetFiles(extractedDir, "*", SearchOption.AllDirectories))
             {
                 var relativePath = file[(extractedDir.Length + 1)..];
-                var destPath = Path.Combine(zapretDir, relativePath);
+                var destPath = Path.Combine(_zapretDir, relativePath);
 
-                // Пропускаем обновление самого себя
                 if (Path.GetFileName(file).Equals(exeName, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                // Создаем директорию если нужно
                 var destDir = Path.GetDirectoryName(destPath);
                 if (!Directory.Exists(destDir))
                     Directory.CreateDirectory(destDir);
@@ -424,11 +419,6 @@ class TrayBatLauncher : ApplicationContext
 
             if (discordProcesses.Length > 0)
             {
-                MessageBox.Show("Discord запущен, закрываю...",
-                    "Очистка кеша",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-
                 foreach (Process discordProcess in discordProcesses)
                 {
                     try
@@ -438,6 +428,7 @@ class TrayBatLauncher : ApplicationContext
                     }
                     catch (Exception ex)
                     {
+                        LogError("ClearDiscordCache", ex);
                     }
                 }
 
@@ -445,11 +436,11 @@ class TrayBatLauncher : ApplicationContext
             }
 
             string[] paths =
-            {
+            [
                 Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\Cache"),
                 Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\Code Cache"),
-                Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\GPUCache")
-            };
+                Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\GPUCache"),
+            ];
 
             bool success = true;
             List<string> failedPaths = new List<string>();
@@ -462,7 +453,7 @@ class TrayBatLauncher : ApplicationContext
                 {
                     Directory.Delete(p, true);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     success = false;
                     failedPaths.Add(p);
@@ -512,9 +503,9 @@ class TrayBatLauncher : ApplicationContext
 
     private void Exit()
     {
-        updateTimer.Stop();
-        updateTimer.Dispose();
-        trayIcon.Visible = false;
+        _updateTimer.Stop();
+        _updateTimer.Dispose();
+        _trayIcon.Visible = false;
         Application.Exit();
     }
 
