@@ -13,10 +13,6 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <None Remove="tray.ico" />
-    </ItemGroup>
-
-    <ItemGroup>
       <EmbeddedResource Include="Resources\tray.ico" />
     </ItemGroup>
 

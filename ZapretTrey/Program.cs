@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Text;
 
 namespace ZapretTrey;
 
@@ -12,6 +13,8 @@ class TrayBatLauncher : ApplicationContext
     private readonly string _logFilePath;
     private readonly string _repoUrl = "https://github.com/Flowseal/zapret-discord-youtube";
     private readonly System.Windows.Forms.Timer _updateTimer;
+    private const string ServiceRegValue = "zapret-discord-youtube";
+
 
     private TrayBatLauncher()
     {
@@ -19,16 +22,17 @@ class TrayBatLauncher : ApplicationContext
         _zapretDir = Path.Combine(_baseDir, "zapret-discord");
         _serviceBatPath = Path.Combine(_zapretDir, "service.bat");
         _logFilePath = Path.Combine(_baseDir, "tray_errors.log");
-        
+
         if (!File.Exists(_logFilePath))
             File.WriteAllText(_logFilePath, "");
 
         SetAutoStart();
         EnsureZapretExistsAsync().GetAwaiter().GetResult();
-        
+
         _trayIcon = new NotifyIcon
         {
-            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTrey.Resources.tray.ico") ?? throw new InvalidOperationException()),
+            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTrey.Resources.tray.ico") ??
+                            throw new InvalidOperationException()),
             ContextMenuStrip = BuildMenu(),
             Visible = true,
             Text = "General BAT launcher"
@@ -49,7 +53,7 @@ class TrayBatLauncher : ApplicationContext
         };
         startupTimer.Start();
     }
-    
+
     private async Task EnsureZapretExistsAsync()
     {
         try
@@ -61,27 +65,27 @@ class TrayBatLauncher : ApplicationContext
 
             ShowSilent("Zapret не найден. Идёт первичная загрузка…", "Инициализация");
 
-            string tempPath = Path.Combine(Path.GetTempPath(), "zapret_init");
+            var tempPath = Path.Combine(Path.GetTempPath(), "zapret_init");
             if (Directory.Exists(tempPath))
                 Directory.Delete(tempPath, true);
 
             Directory.CreateDirectory(tempPath);
 
-            string zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
-            string zipPath = Path.Combine(tempPath, "zapret.zip");
+            var zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
+            var zipPath = Path.Combine(tempPath, "zapret.zip");
 
             using (var http = new HttpClient())
             {
                 var resp = await http.GetAsync(zipUrl);
                 resp.EnsureSuccessStatusCode();
 
-                using var fs = new FileStream(zipPath, FileMode.Create);
+                await using var fs = new FileStream(zipPath, FileMode.Create);
                 await resp.Content.CopyToAsync(fs);
             }
 
             System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tempPath);
 
-            string extractedDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
+            var extractedDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
             if (!Directory.Exists(extractedDir))
                 throw new Exception("Не удалось распаковать zapret");
 
@@ -115,6 +119,7 @@ class TrayBatLauncher : ApplicationContext
                 _logFilePath,
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {context}\n{ex}\n\n"
             );
+            Console.WriteLine(context, ex);
         }
         catch
         {
@@ -140,13 +145,37 @@ class TrayBatLauncher : ApplicationContext
     {
         var menu = new ContextMenuStrip();
 
+        var serviceItem = new ToolStripMenuItem("Service");
+
+        var currentBat = GetInstalledServiceBat();
+
+        var installMenu = new ToolStripMenuItem("Установить сервис");
+
+        foreach (var bat in Directory.GetFiles(_zapretDir, "*.bat")
+                     .Where(b => !Path.GetFileName(b).StartsWith("service")))
+        {
+            var name = Path.GetFileName(bat);
+            var item = new ToolStripMenuItem(name);
+
+            if (Path.GetFileNameWithoutExtension(name) == currentBat)
+                item.Checked = true;
+
+            item.Click += (_, _) => InstallServiceFromBat(name);
+            installMenu.DropDownItems.Add(item);
+        }
+
+        serviceItem.DropDownItems.Add(installMenu);
+        serviceItem.DropDownItems.Add("Удалить сервис", null, (_, _) => RemoveService());
+
+        menu.Items.Add(serviceItem);
+
+
         var generalMenu = new ToolStripMenuItem("General scripts");
         LoadGeneralBats(generalMenu);
         menu.Items.Add(generalMenu);
 
         menu.Items.Add(new ToolStripSeparator());
 
-        var serviceItem = new ToolStripMenuItem("Service");
         serviceItem.DropDownItems.Add("Запуск Service.bat", null, (_, _) => RunServiceBat());
         serviceItem.DropDownItems.Add("Проверить обновления", null, async (_, _) => await CheckForUpdatesAsync(silent: false));
         serviceItem.DropDownItems.Add("Обновить списки", null, async (_, _) => await UpdateListsAsync());
@@ -160,13 +189,11 @@ class TrayBatLauncher : ApplicationContext
         autostartItem.Checked = IsAutoStartEnabled();
         autostartItem.Click += (s, _) =>
         {
-            var item = s as ToolStripMenuItem;
+            if (s is not ToolStripMenuItem item)
+                return;
 
-            if (item != null)
-            {
-                item.Checked = !item.Checked;
-                SetAutoStart(item.Checked);
-            }
+            item.Checked = !item.Checked;
+            SetAutoStart(item.Checked);
         };
         menu.Items.Add(autostartItem);
         menu.Items.Add("Открыть логи", null, (_, _) => OpenLogs());
@@ -205,6 +232,193 @@ class TrayBatLauncher : ApplicationContext
             UseShellExecute = true
         });
     }
+
+    private string? GetInstalledServiceBat()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\zapret");
+
+            return key?.GetValue(ServiceRegValue) as string;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void RemoveService()
+    {
+        try
+        {
+            RunAdmin("sc stop zapret");
+            RunAdmin("sc delete zapret");
+
+            RunAdmin("sc stop WinDivert");
+            RunAdmin("sc delete WinDivert");
+
+            RunAdmin("sc stop WinDivert14");
+            RunAdmin("sc delete WinDivert14");
+
+            RunAdmin("taskkill /IM winws.exe /F");
+
+            Microsoft.Win32.Registry.LocalMachine.DeleteSubKeyTree(
+                @"SYSTEM\CurrentControlSet\Services\zapret",
+                false
+            );
+
+            ShowSilent("Сервис zapret удалён", "Service");
+
+            UpdateServiceMenuChecks();
+        }
+        catch (Exception ex)
+        {
+            LogError("RemoveService", ex);
+            ShowSilent(ex.Message, "Ошибка");
+        }
+    }
+
+    private void InstallServiceFromBat(string batName)
+    {
+        try
+        {
+            var batPath = Path.Combine(_zapretDir, batName);
+            if (!File.Exists(batPath))
+                throw new FileNotFoundException(batName);
+
+            var args = ParseWinwsArgs(batPath);
+            var bin = Path.Combine(_zapretDir, "bin", "winws.exe\\");
+
+            RunAdmin("net stop zapret");
+            RunAdmin("sc delete zapret");
+            var quotedBinPath = $"\"\\\"{bin}\" {args}\"";
+
+
+            Console.WriteLine(args);
+            Console.WriteLine();
+            Console.WriteLine();
+
+            RunAdmin(
+                $"sc create zapret binPath= {quotedBinPath} start= auto DisplayName= \"zapret\""
+            );
+
+
+            RunAdmin("sc description zapret \"Zapret DPI bypass software\"");
+            RunAdmin("sc start zapret");
+
+            using var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
+                @"SYSTEM\CurrentControlSet\Services\zapret");
+
+            key.SetValue(ServiceRegValue, Path.GetFileNameWithoutExtension(batName));
+
+            ShowSilent($"Сервис установлен из {batName}", "Service");
+
+            UpdateServiceMenuChecks();
+        }
+        catch (Exception ex)
+        {
+            LogError("InstallServiceFromBat", ex);
+            ShowSilent(ex.Message, "Ошибка");
+        }
+    }
+
+    private string ParseWinwsArgs(string batPath)
+    {
+        var binPath = Path.Combine(_zapretDir, "bin") + Path.DirectorySeparatorChar;
+        var listsPath = Path.Combine(_zapretDir, "lists") + Path.DirectorySeparatorChar;
+        var gameFilter = "12";
+
+        var sb = new StringBuilder();
+        bool found = false;
+
+        foreach (var raw in File.ReadLines(batPath))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith("::"))
+                continue;
+
+            if (!found)
+            {
+                var idx = line.IndexOf("winws.exe\"", StringComparison.OrdinalIgnoreCase);
+                if (idx < 0)
+                    continue;
+
+                found = true;
+                line = line[(idx + "winws.exe\"".Length)..];
+            }
+
+            if (line.EndsWith("^"))
+                line = line[..^1];
+
+            sb.Append(' ');
+            sb.Append(line);
+        }
+
+        if (!found)
+            throw new Exception("winws.exe не найден в bat");
+
+        var result = sb.ToString()
+            .Replace("%BIN%", binPath)
+            .Replace("%LISTS%", listsPath)
+            .Replace("%GameFilter%", gameFilter);
+
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"--(\S+?)=", "--$1 ");
+
+        result = result.Replace("\"", "\\\"");
+
+        result = result.Replace("^", "");
+
+        return result.Trim();
+    }
+
+
+    private void RunAdmin(string cmd)
+    {
+        var ps = $@"
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = 'cmd.exe'
+$psi.Arguments = '/c {cmd}'
+$psi.Verb = 'runas'
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+
+$p = New-Object System.Diagnostics.Process
+$p.StartInfo = $psi
+$p.Start() | Out-Null
+$p.WaitForExit()
+
+Write-Output 'EXIT=' + $p.ExitCode
+Write-Output $p.StandardOutput.ReadToEnd()
+Write-Output $p.StandardError.ReadToEnd()
+";
+
+        var tmp = Path.GetTempFileName() + ".ps1";
+        File.WriteAllText(tmp, ps);
+
+        var p = Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-ExecutionPolicy Bypass -File \"{tmp}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        });
+
+        var output = p!.StandardOutput.ReadToEnd();
+        var error = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+
+        File.Delete(tmp);
+
+        Console.WriteLine(cmd);
+        Console.WriteLine(output);
+        Console.WriteLine(error);
+    }
+
 
     private void RunServiceBat()
     {
@@ -300,18 +514,38 @@ class TrayBatLauncher : ApplicationContext
         }
     }
 
+    private void UpdateServiceMenuChecks()
+    {
+        var currentBat = GetInstalledServiceBat();
+
+        foreach (ToolStripMenuItem item in _trayIcon.ContextMenuStrip.Items.OfType<ToolStripMenuItem>())
+        {
+            if (item.Text != "Service") continue;
+
+            var installMenu = item.DropDownItems.OfType<ToolStripMenuItem>()
+                .FirstOrDefault(m => m.Text == "Установить сервис");
+            if (installMenu == null) continue;
+
+            foreach (ToolStripMenuItem batItem in installMenu.DropDownItems.OfType<ToolStripMenuItem>())
+            {
+                batItem.Checked = Path.GetFileNameWithoutExtension(batItem.Text) == currentBat;
+            }
+        }
+    }
+
+
     private async Task DownloadAndUpdateAsync()
     {
         try
         {
-            string tempPath = Path.Combine(Path.GetTempPath(), "zapret_update");
+            var tempPath = Path.Combine(Path.GetTempPath(), "zapret_update");
             if (Directory.Exists(tempPath))
                 Directory.Delete(tempPath, true);
 
             Directory.CreateDirectory(tempPath);
 
-            string zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
-            string zipPath = Path.Combine(tempPath, "update.zip");
+            var zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
+            var zipPath = Path.Combine(tempPath, "update.zip");
 
             using (var httpClient = new HttpClient())
             {
@@ -329,7 +563,7 @@ class TrayBatLauncher : ApplicationContext
 
             System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tempPath, true);
 
-            string extractedDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
+            var extractedDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
             if (!Directory.Exists(extractedDir))
                 throw new Exception("Не удалось найти распакованные файлы");
 
@@ -415,11 +649,11 @@ class TrayBatLauncher : ApplicationContext
     {
         try
         {
-            Process[] discordProcesses = Process.GetProcessesByName("Discord");
+            var discordProcesses = Process.GetProcessesByName("Discord");
 
             if (discordProcesses.Length > 0)
             {
-                foreach (Process discordProcess in discordProcesses)
+                foreach (var discordProcess in discordProcesses)
                 {
                     try
                     {
@@ -442,8 +676,8 @@ class TrayBatLauncher : ApplicationContext
                 Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\GPUCache"),
             ];
 
-            bool success = true;
-            List<string> failedPaths = new List<string>();
+            var success = true;
+            var failedPaths = new List<string>();
 
             foreach (var p in paths)
             {
@@ -479,7 +713,7 @@ class TrayBatLauncher : ApplicationContext
             ShowSilent($"Ошибка при очистке кеша: {ex.Message}", "Ошибка");
         }
     }
-    
+
     private void ShowSilent(string text, string caption)
     {
         MessageBox.Show(
@@ -512,8 +746,16 @@ class TrayBatLauncher : ApplicationContext
     [STAThread]
     static void Main()
     {
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new TrayBatLauncher());
+        try
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new TrayBatLauncher());
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.ToString(), "Ошибка при запуске");
+            throw;
+        }
     }
 }
