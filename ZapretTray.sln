@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZapretTrey", "ZapretTrey\ZapretTrey.csproj", "{0B91E572-0E2B-45BC-95F4-714B6C1FBA4C}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZapretTray", "ZapretTray\ZapretTray.csproj", "{0B91E572-0E2B-45BC-95F4-714B6C1FBA4C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

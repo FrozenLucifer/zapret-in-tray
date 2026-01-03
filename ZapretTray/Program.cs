@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 
-namespace ZapretTrey;
+namespace ZapretTray;
 
 class TrayBatLauncher : ApplicationContext
 {
@@ -31,7 +31,7 @@ class TrayBatLauncher : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTrey.Resources.tray.ico") ??
+            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTray.Resources.tray.ico") ??
                             throw new InvalidOperationException()),
             ContextMenuStrip = BuildMenu(),
             Visible = true,
