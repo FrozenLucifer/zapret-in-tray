@@ -141,65 +141,89 @@ class TrayBatLauncher : ApplicationContext
         });
     }
 
+    private void OpenFolder()
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = _baseDir,
+            UseShellExecute = true
+        });
+    }
+
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
 
-        var serviceItem = new ToolStripMenuItem("Service");
+        menu.Items.Add(BuildServiceMenu());
 
-        var currentBat = GetInstalledServiceBat();
+        var scripts = new ToolStripMenuItem(".bat скрипты");
+        LoadGeneralBats(scripts);
+        menu.Items.Add(scripts);
 
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(BuildMiscMenu());
+
+        menu.Items.Add("Закрыть", null, (_, _) => Exit());
+
+        return menu;
+    }
+
+    private ToolStripMenuItem BuildServiceMenu()
+    {
+        var serviceItem = new ToolStripMenuItem("Сервис");
+
+        serviceItem.DropDownItems.Add(BuildInstallServiceMenu());
+        serviceItem.DropDownItems.Add("Удалить сервис", null, (_, _) => RemoveService());
+        serviceItem.DropDownItems.Add("Запустить service.bat", null, (_, _) => RunServiceBat());
+
+        return serviceItem;
+    }
+
+    private ToolStripMenuItem BuildInstallServiceMenu()
+    {
         var installMenu = new ToolStripMenuItem("Установить сервис");
+        var currentBat = GetInstalledServiceBat();
 
         foreach (var bat in Directory.GetFiles(_zapretDir, "*.bat")
                      .Where(b => !Path.GetFileName(b).StartsWith("service")))
         {
             var name = Path.GetFileName(bat);
-            var item = new ToolStripMenuItem(name);
-
-            if (Path.GetFileNameWithoutExtension(name) == currentBat)
-                item.Checked = true;
+            var item = new ToolStripMenuItem(name)
+            {
+                Checked = Path.GetFileNameWithoutExtension(name) == currentBat
+            };
 
             item.Click += (_, _) => InstallServiceFromBat(name);
             installMenu.DropDownItems.Add(item);
         }
 
-        serviceItem.DropDownItems.Add(installMenu);
-        serviceItem.DropDownItems.Add("Удалить сервис", null, (_, _) => RemoveService());
+        return installMenu;
+    }
 
-        menu.Items.Add(serviceItem);
+    private ToolStripMenuItem BuildMiscMenu()
+    {
+        var miscMenu = new ToolStripMenuItem("Прочее");
 
+        var autostartItem = new ToolStripMenuItem("Автозапуск")
+        {
+            Checked = IsAutoStartEnabled()
+        };
 
-        var generalMenu = new ToolStripMenuItem("General scripts");
-        LoadGeneralBats(generalMenu);
-        menu.Items.Add(generalMenu);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        serviceItem.DropDownItems.Add("Запуск Service.bat", null, (_, _) => RunServiceBat());
-        serviceItem.DropDownItems.Add("Проверить обновления", null, async (_, _) => await CheckForUpdatesAsync(silent: false));
-        serviceItem.DropDownItems.Add("Обновить списки", null, async (_, _) => await UpdateListsAsync());
-        menu.Items.Add(serviceItem);
-
-        menu.Items.Add("Сбросить кеш Discord", null, (_, _) => ClearDiscordCache());
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        var autostartItem = new ToolStripMenuItem("Автозапуск");
-        autostartItem.Checked = IsAutoStartEnabled();
         autostartItem.Click += (s, _) =>
         {
-            if (s is not ToolStripMenuItem item)
-                return;
+            if (s is not ToolStripMenuItem item) return;
 
             item.Checked = !item.Checked;
             SetAutoStart(item.Checked);
         };
-        menu.Items.Add(autostartItem);
-        menu.Items.Add("Открыть логи", null, (_, _) => OpenLogs());
-        menu.Items.Add("Выход", null, (_, _) => Exit());
 
-        return menu;
+        miscMenu.DropDownItems.Add(autostartItem);
+        miscMenu.DropDownItems.Add("Проверить обновления", null, async (_, _) => await CheckForUpdatesAsync(silent: false));
+        miscMenu.DropDownItems.Add("Сбросить кеш Discord", null, (_, _) => ClearDiscordCache());
+        miscMenu.DropDownItems.Add("Открыть логи", null, (_, _) => OpenLogs());
+        miscMenu.DropDownItems.Add("Открыть папку", null, (_, _) => OpenFolder());
+
+        return miscMenu;
     }
 
     private void LoadGeneralBats(ToolStripMenuItem root)
@@ -475,45 +499,7 @@ Write-Output $p.StandardError.ReadToEnd()
             }
         }
     }
-
-    private async Task UpdateListsAsync()
-    {
-        try
-        {
-            if (!File.Exists(_serviceBatPath))
-                return;
-
-            var process = new Process();
-            process.StartInfo.FileName = "cmd.exe";
-            process.StartInfo.Arguments = $"/c \"\"{_serviceBatPath}\"\"";
-            process.StartInfo.WorkingDirectory = _zapretDir;
-            process.StartInfo.CreateNoWindow = true;
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.RedirectStandardInput = true;
-
-            process.Start();
-
-            await using (var sw = process.StandardInput)
-            {
-                if (sw.BaseStream.CanWrite)
-                {
-                    await sw.WriteLineAsync("8");
-                    await sw.WriteLineAsync();
-                }
-            }
-
-            await process.WaitForExitAsync();
-
-            ShowSilent("Списки успешно обновлены", "Обновление");
-        }
-        catch (Exception ex)
-        {
-            LogError("UpdateListsAsync", ex);
-
-            ShowSilent($"Ошибка при обновлении списков: {ex.Message}", "Ошибка");
-        }
-    }
-
+    
     private void UpdateServiceMenuChecks()
     {
         var currentBat = GetInstalledServiceBat();
@@ -739,7 +725,6 @@ Write-Output $p.StandardError.ReadToEnd()
     {
         _updateTimer.Stop();
         _updateTimer.Dispose();
-        _trayIcon.Visible = false;
         Application.Exit();
     }
 
