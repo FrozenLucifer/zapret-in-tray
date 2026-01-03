@@ -14,6 +14,8 @@ class TrayBatLauncher : ApplicationContext
     private readonly string _repoUrl = "https://github.com/Flowseal/zapret-discord-youtube";
     private readonly System.Windows.Forms.Timer _updateTimer;
     private const string ServiceRegValue = "zapret-discord-youtube";
+    private ToolStripMenuItem? _installServiceMenu;
+
 
 
     private TrayBatLauncher()
@@ -181,7 +183,8 @@ class TrayBatLauncher : ApplicationContext
 
     private ToolStripMenuItem BuildInstallServiceMenu()
     {
-        var installMenu = new ToolStripMenuItem("Установить сервис");
+        _installServiceMenu = new ToolStripMenuItem("Установить сервис");
+
         var currentBat = GetInstalledServiceBat();
 
         foreach (var bat in Directory.GetFiles(_zapretDir, "*.bat")
@@ -194,10 +197,10 @@ class TrayBatLauncher : ApplicationContext
             };
 
             item.Click += (_, _) => InstallServiceFromBat(name);
-            installMenu.DropDownItems.Add(item);
+            _installServiceMenu.DropDownItems.Add(item);
         }
 
-        return installMenu;
+        return _installServiceMenu;
     }
 
     private ToolStripMenuItem BuildMiscMenu()
@@ -318,11 +321,6 @@ class TrayBatLauncher : ApplicationContext
             RunAdmin("sc delete zapret");
             var quotedBinPath = $"\"\\\"{bin}\" {args}\"";
 
-
-            Console.WriteLine(args);
-            Console.WriteLine();
-            Console.WriteLine();
-
             RunAdmin(
                 $"sc create zapret binPath= {quotedBinPath} start= auto DisplayName= \"zapret\""
             );
@@ -437,10 +435,6 @@ Write-Output $p.StandardError.ReadToEnd()
         p.WaitForExit();
 
         File.Delete(tmp);
-
-        Console.WriteLine(cmd);
-        Console.WriteLine(output);
-        Console.WriteLine(error);
     }
 
 
@@ -502,20 +496,14 @@ Write-Output $p.StandardError.ReadToEnd()
     
     private void UpdateServiceMenuChecks()
     {
+        if (_installServiceMenu == null)
+            return;
+
         var currentBat = GetInstalledServiceBat();
 
-        foreach (ToolStripMenuItem item in _trayIcon.ContextMenuStrip.Items.OfType<ToolStripMenuItem>())
+        foreach (ToolStripMenuItem item in _installServiceMenu.DropDownItems)
         {
-            if (item.Text != "Service") continue;
-
-            var installMenu = item.DropDownItems.OfType<ToolStripMenuItem>()
-                .FirstOrDefault(m => m.Text == "Установить сервис");
-            if (installMenu == null) continue;
-
-            foreach (ToolStripMenuItem batItem in installMenu.DropDownItems.OfType<ToolStripMenuItem>())
-            {
-                batItem.Checked = Path.GetFileNameWithoutExtension(batItem.Text) == currentBat;
-            }
+            item.Checked = Path.GetFileNameWithoutExtension(item.Text) == currentBat;
         }
     }
 
