@@ -1,0 +1,40 @@
+﻿name: Build Draft Release (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия (например 1.2.0)"
+        required: true
+      title:
+        description: "Название релиза"
+        required: true
+      body:
+        description: "Описание релиза (Markdown)"
+        required: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish
+        run: dotnet publish -c Release
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: ${{ inputs.title }}
+          body: ${{ inputs.body }}
+          draft: true
+          files: |
+            **/publish/*.exe
