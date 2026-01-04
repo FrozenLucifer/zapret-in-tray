@@ -1,4 +1,4 @@
-﻿name: Build Draft Release (manual)
+name: Build Draft Release (manual)
 
 on:
   workflow_dispatch:
