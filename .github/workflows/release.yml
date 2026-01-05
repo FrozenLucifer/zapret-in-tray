@@ -30,11 +30,10 @@ jobs:
         run: dotnet publish -c Release
 
       - name: Zip ZapretTray.exe
+        shell: pwsh
         run: |
-          powershell Compress-Archive `
-            -Path "**/publish/ZapretTray.exe" `
-            -DestinationPath "ZapretTray.exe.zip" `
-            -Force
+          $exe = Get-ChildItem -Recurse -Filter ZapretTray.exe | Select-Object -First 1
+          Compress-Archive $exe.FullName ZapretTray.exe.zip -Force
 
       - name: Create Draft Release
         uses: softprops/action-gh-release@v2
