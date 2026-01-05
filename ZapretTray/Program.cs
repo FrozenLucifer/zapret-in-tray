@@ -6,7 +6,6 @@ namespace ZapretTray;
 
 class TrayBatLauncher : ApplicationContext
 {
-    private readonly NotifyIcon _trayIcon;
     private readonly string _baseDir;
     private readonly string _zapretDir;
     private readonly string _serviceBatPath;
@@ -17,7 +16,6 @@ class TrayBatLauncher : ApplicationContext
     private ToolStripMenuItem? _installServiceMenu;
 
 
-
     private TrayBatLauncher()
     {
         _baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -26,18 +24,18 @@ class TrayBatLauncher : ApplicationContext
         _logFilePath = Path.Combine(_baseDir, "tray_errors.log");
 
         if (!File.Exists(_logFilePath))
-            File.WriteAllText(_logFilePath, "");
+            File.Create(_logFilePath);
 
         SetAutoStart();
         EnsureZapretExistsAsync().GetAwaiter().GetResult();
 
-        _trayIcon = new NotifyIcon
+        new NotifyIcon
         {
             Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTray.Resources.tray.ico") ??
                             throw new InvalidOperationException()),
             ContextMenuStrip = BuildMenu(),
             Visible = true,
-            Text = "General BAT launcher"
+            Text = "Zapret Tray"
         };
 
         _updateTimer = new System.Windows.Forms.Timer();
@@ -493,7 +491,7 @@ Write-Output $p.StandardError.ReadToEnd()
             }
         }
     }
-    
+
     private void UpdateServiceMenuChecks()
     {
         if (_installServiceMenu == null)
