@@ -46,4 +46,4 @@ jobs:
           draft: true
           files: |
             **/publish/ZapretTray.exe
-            ZapretTray.exe.zip
+            **/publish/ZapretTray.exe.zip
