@@ -23,15 +23,6 @@ class TrayBatLauncher : ApplicationContext
 
     private TrayBatLauncher()
     {
-        Task.Run(() =>
-        {
-            while (_exitEvent!.WaitOne())
-            {
-                Exit();
-                break;
-            }
-        });
-
         _baseDir = AppDomain.CurrentDomain.BaseDirectory;
         _zapretDir = Path.Combine(_baseDir, "zapret-discord");
         _serviceBatPath = Path.Combine(_zapretDir, "service.bat");
@@ -734,24 +725,37 @@ Write-Output $p.StandardError.ReadToEnd()
         bool created;
 
         _mutex = new Mutex(true, MutexName, out created);
-        _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
 
         if (!created)
         {
-            _exitEvent.Set();
-            Thread.Sleep(500);
-            _mutex = new Mutex(true, MutexName, out _);
+            try
+            {
+                using var exitEvent = EventWaitHandle.OpenExisting(ExitEventName);
+                exitEvent.Set();
+            }
+            catch
+            {
+            }
+
+            _mutex.WaitOne();
         }
 
-        try
+        _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
+
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+
+        var ctx = new TrayBatLauncher();
+
+        Task.Run(() =>
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new TrayBatLauncher());
-        }
-        finally
-        {
-            _mutex.ReleaseMutex();
-        }
+            _exitEvent.WaitOne();
+            ctx.Exit();
+        });
+
+        Application.Run(ctx);
+
+        _mutex.ReleaseMutex();
     }
+
 }
