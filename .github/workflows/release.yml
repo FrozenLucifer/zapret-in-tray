@@ -9,9 +9,10 @@ on:
       title:
         description: "Название релиза"
         required: true
-  permissions:
-    contents: write
-
+        
+permissions:
+  contents: write
+  
 jobs:
   build:
     runs-on: windows-latest
