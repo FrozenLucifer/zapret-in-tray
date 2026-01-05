@@ -10,6 +10,7 @@
         <SelfContained>true</SelfContained>
         <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
         <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+        <ApplicationIcon>Resources\tray.ico</ApplicationIcon>
     </PropertyGroup>
 
     <ItemGroup>

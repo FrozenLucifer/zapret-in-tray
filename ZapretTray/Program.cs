@@ -14,10 +14,24 @@ class TrayBatLauncher : ApplicationContext
     private readonly System.Windows.Forms.Timer _updateTimer;
     private const string ServiceRegValue = "zapret-discord-youtube";
     private ToolStripMenuItem? _installServiceMenu;
+    private const string MutexName = "ZapretTray_SingleInstance_Mutex";
+    private const string ExitEventName = "ZapretTray_Exit_Old_Instance";
+
+    private static Mutex? _mutex;
+    private static EventWaitHandle? _exitEvent;
 
 
     private TrayBatLauncher()
     {
+        Task.Run(() =>
+        {
+            while (_exitEvent!.WaitOne())
+            {
+                Exit();
+                break;
+            }
+        });
+
         _baseDir = AppDomain.CurrentDomain.BaseDirectory;
         _zapretDir = Path.Combine(_baseDir, "zapret-discord");
         _serviceBatPath = Path.Combine(_zapretDir, "service.bat");
@@ -717,16 +731,27 @@ Write-Output $p.StandardError.ReadToEnd()
     [STAThread]
     static void Main()
     {
+        bool created;
+
+        _mutex = new Mutex(true, MutexName, out created);
+        _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
+
+        if (!created)
+        {
+            _exitEvent.Set();
+            Thread.Sleep(500);
+            _mutex = new Mutex(true, MutexName, out _);
+        }
+
         try
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayBatLauncher());
         }
-        catch (Exception ex)
+        finally
         {
-            MessageBox.Show(ex.ToString(), "Ошибка при запуске");
-            throw;
+            _mutex.ReleaseMutex();
         }
     }
 }
