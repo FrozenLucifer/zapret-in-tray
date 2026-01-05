@@ -32,7 +32,7 @@ jobs:
       - name: Zip ZapretTray.exe
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Recurse -Filter ZapretTray.exe | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse -Path **/publish -Filter ZapretTray.exe | Select-Object -First 1
           Compress-Archive $exe.FullName ZapretTray.exe.zip -Force
 
       - name: Create Draft Release
@@ -43,5 +43,5 @@ jobs:
           body: ${{ inputs.body }}
           draft: true
           files: |
-            **/publish/*.exe
+            **/publish/ZapretTray.exe
             ZapretTray.exe.zip
