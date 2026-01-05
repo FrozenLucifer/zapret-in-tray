@@ -9,9 +9,6 @@ on:
       title:
         description: "Название релиза"
         required: true
-      body:
-        description: "Описание релиза (Markdown)"
-        required: false
 
 jobs:
   build:
@@ -29,6 +26,13 @@ jobs:
       - name: Publish
         run: dotnet publish -c Release
 
+      - name: Zip ZapretTray.exe
+        run: |
+          powershell Compress-Archive `
+            -Path "**/publish/ZapretTray.exe" `
+            -DestinationPath "ZapretTray.exe.zip" `
+            -Force
+
       - name: Create Draft Release
         uses: softprops/action-gh-release@v2
         with:
@@ -38,3 +42,4 @@ jobs:
           draft: true
           files: |
             **/publish/*.exe
+            ZapretTray.exe.zip
