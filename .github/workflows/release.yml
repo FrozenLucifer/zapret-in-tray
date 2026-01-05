@@ -9,6 +9,8 @@ on:
       title:
         description: "Название релиза"
         required: true
+  permissions:
+    contents: write
 
 jobs:
   build:
