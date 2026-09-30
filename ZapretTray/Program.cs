@@ -1,312 +1,216 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace ZapretTray;
 
 class TrayBatLauncher : ApplicationContext
 {
-    private readonly string _baseDir;
+    private const string RepoUrl = "https://github.com/Flowseal/zapret-discord-youtube";
+    private const string VersionUrl = "https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/main/.service/version.txt";
+    private const string ServiceRegValue = "zapret-discord-youtube";
+    private const string MutexName = "ZapretTray_SingleInstance_Mutex";
+    private const string ExitEventName = "ZapretTray_Exit_Old_Instance";
+
+    private readonly string _baseDir = AppDomain.CurrentDomain.BaseDirectory;
     private readonly string _zapretDir;
     private readonly string _serviceBatPath;
     private readonly string _logFilePath;
-    private readonly string _repoUrl = "https://github.com/Flowseal/zapret-discord-youtube";
-    private readonly System.Windows.Forms.Timer _updateTimer;
-    private const string ServiceRegValue = "zapret-discord-youtube";
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly NotifyIcon _notifyIcon;
     private ToolStripMenuItem? _installServiceMenu;
-    private const string MutexName = "ZapretTray_SingleInstance_Mutex";
-    private const string ExitEventName = "ZapretTray_Exit_Old_Instance";
 
     private static Mutex? _mutex;
     private static EventWaitHandle? _exitEvent;
 
-
     private TrayBatLauncher()
     {
-        _baseDir = AppDomain.CurrentDomain.BaseDirectory;
         _zapretDir = Path.Combine(_baseDir, "zapret-discord");
         _serviceBatPath = Path.Combine(_zapretDir, "service.bat");
         _logFilePath = Path.Combine(_baseDir, "tray_errors.log");
-
-        if (!File.Exists(_logFilePath))
-            File.Create(_logFilePath);
-
-        SetAutoStart();
+        EnsureLogFileExists();
         EnsureZapretExistsAsync().GetAwaiter().GetResult();
 
-        new NotifyIcon
+        _notifyIcon = new NotifyIcon
         {
             Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTray.Resources.tray.ico") ??
-                            throw new InvalidOperationException()),
+                            throw new InvalidOperationException("Не удалось загрузить значок приложения.")),
             ContextMenuStrip = BuildMenu(),
-            Visible = true,
-            Text = "Zapret Tray"
+            Text = "Zapret Tray",
+            Visible = true
         };
+    }
 
-        _updateTimer = new System.Windows.Forms.Timer();
-        _updateTimer.Interval = 24 * 60 * 60 * 1000;
-        _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync(silent: true);
-        _updateTimer.Start();
-
-        var startupTimer = new System.Windows.Forms.Timer();
-        startupTimer.Interval = 30000;
-        startupTimer.Tick += async (_, _) =>
+    private void EnsureLogFileExists()
+    {
+        try
         {
-            await CheckForUpdatesAsync(silent: true);
-            startupTimer.Stop();
-            startupTimer.Dispose();
-        };
-        startupTimer.Start();
+            if (!File.Exists(_logFilePath))
+            {
+                using var _ = File.Create(_logFilePath);
+            }
+        }
+        catch { }
     }
 
     private async Task EnsureZapretExistsAsync()
     {
+        if (File.Exists(_serviceBatPath)) return;
+
+        var tempPath = Path.Combine(Path.GetTempPath(), "ZapretTray", Guid.NewGuid().ToString("N"));
         try
         {
-            if (File.Exists(_serviceBatPath))
-                return;
-
             Directory.CreateDirectory(_zapretDir);
-
-            ShowSilent("Zapret не найден. Идёт первичная загрузка…", "Инициализация");
-
-            var tempPath = Path.Combine(Path.GetTempPath(), "zapret_init");
-            if (Directory.Exists(tempPath))
-                Directory.Delete(tempPath, true);
-
             Directory.CreateDirectory(tempPath);
-
-            var zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
             var zipPath = Path.Combine(tempPath, "zapret.zip");
-
-            using (var http = new HttpClient())
-            {
-                var resp = await http.GetAsync(zipUrl);
-                resp.EnsureSuccessStatusCode();
-
-                await using var fs = new FileStream(zipPath, FileMode.Create);
-                await resp.Content.CopyToAsync(fs);
-            }
+            using var response = await _http.GetAsync($"{RepoUrl}/archive/refs/heads/main.zip");
+            response.EnsureSuccessStatusCode();
+            await using (var file = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                await response.Content.CopyToAsync(file);
 
             System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tempPath);
-
-            var extractedDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
-            if (!Directory.Exists(extractedDir))
-                throw new Exception("Не удалось распаковать zapret");
-
-            foreach (var file in Directory.GetFiles(extractedDir, "*", SearchOption.AllDirectories))
-            {
-                var rel = file[(extractedDir.Length + 1)..];
-                var dst = Path.Combine(_zapretDir, rel);
-
-                var dstDir = Path.GetDirectoryName(dst);
-                if (!Directory.Exists(dstDir))
-                    Directory.CreateDirectory(dstDir);
-
-                File.Copy(file, dst, true);
-            }
-
-            ShowSilent("Zapret успешно загружен", "Готово");
+            var sourceDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
+            if (!Directory.Exists(sourceDir)) throw new InvalidOperationException("Не удалось распаковать архив zapret.");
+            CopyDirectory(sourceDir, _zapretDir);
         }
         catch (Exception ex)
         {
             LogError("EnsureZapretExistsAsync", ex);
-            ShowSilent($"Ошибка загрузки zapret: {ex.Message}", "Ошибка");
+            ShowError($"Не удалось загрузить zapret. Проверьте подключение к GitHub и повторите запуск.\n\n{ex.Message}");
+        }
+        finally { TryDeleteDirectory(tempPath); }
+    }
+
+    private static void CopyDirectory(string sourceDir, string destinationDir)
+    {
+        foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
+        {
+            var destination = Path.Combine(destinationDir, Path.GetRelativePath(sourceDir, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file, destination, true);
         }
     }
 
+    private static void TryDeleteDirectory(string path)
+    {
+        try { if (Directory.Exists(path)) Directory.Delete(path, true); }
+        catch { }
+    }
 
     private void LogError(string context, Exception ex)
     {
-        try
-        {
-            File.AppendAllText(
-                _logFilePath,
-                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {context}\n{ex}\n\n"
-            );
-            Console.WriteLine(context, ex);
-        }
-        catch
-        {
-        }
-    }
-
-    private void OpenLogs()
-    {
-        if (!File.Exists(_logFilePath))
-        {
-            ShowSilent("Файл логов пока не создан", "Логи");
-            return;
-        }
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = _logFilePath,
-            UseShellExecute = true
-        });
-    }
-
-    private void OpenFolder()
-    {
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = _baseDir,
-            UseShellExecute = true
-        });
+        try { File.AppendAllText(_logFilePath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {context}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}"); }
+        catch { }
     }
 
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
-
         menu.Items.Add(BuildServiceMenu());
-
-        var scripts = new ToolStripMenuItem(".bat скрипты");
-        LoadGeneralBats(scripts);
-        menu.Items.Add(scripts);
-
+        var strategies = new ToolStripMenuItem(".bat-стратегии");
+        LoadGeneralBats(strategies);
+        menu.Items.Add(strategies);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(BuildMiscMenu());
-
         menu.Items.Add("Закрыть", null, (_, _) => Exit());
-
         return menu;
     }
 
     private ToolStripMenuItem BuildServiceMenu()
     {
-        var serviceItem = new ToolStripMenuItem("Сервис");
-
-        serviceItem.DropDownItems.Add(BuildInstallServiceMenu());
-        serviceItem.DropDownItems.Add("Удалить сервис", null, (_, _) => RemoveService());
-        serviceItem.DropDownItems.Add("Запустить service.bat", null, (_, _) => RunServiceBat());
-
-        return serviceItem;
+        var menu = new ToolStripMenuItem("Сервис");
+        menu.DropDownItems.Add(BuildInstallServiceMenu());
+        menu.DropDownItems.Add("Удалить сервис zapret", null, (_, _) => RemoveService());
+        menu.DropDownItems.Add("Открыть service.bat", null, (_, _) => RunServiceBat());
+        return menu;
     }
 
     private ToolStripMenuItem BuildInstallServiceMenu()
     {
         _installServiceMenu = new ToolStripMenuItem("Установить сервис");
-
-        var currentBat = GetInstalledServiceBat();
-
-        foreach (var bat in Directory.GetFiles(_zapretDir, "*.bat")
-                     .Where(b => !Path.GetFileName(b).StartsWith("service")))
+        var bats = GetRootBatFiles();
+        var installed = GetInstalledServiceBat();
+        foreach (var bat in bats)
         {
             var name = Path.GetFileName(bat);
             var item = new ToolStripMenuItem(name)
             {
-                Checked = Path.GetFileNameWithoutExtension(name) == currentBat
+                Checked = string.Equals(Path.GetFileNameWithoutExtension(name), installed, StringComparison.OrdinalIgnoreCase)
             };
-
             item.Click += (_, _) => InstallServiceFromBat(name);
             _installServiceMenu.DropDownItems.Add(item);
         }
 
+        if (bats.Count == 0)
+        {
+            _installServiceMenu.DropDownItems.Add("(стратегии не найдены)").Enabled = false;
+            _installServiceMenu.Enabled = false;
+        }
         return _installServiceMenu;
     }
 
+    private List<string> GetRootBatFiles() => !Directory.Exists(_zapretDir)
+        ? []
+        : Directory.GetFiles(_zapretDir, "*.bat")
+            .Where(path => !Path.GetFileName(path).StartsWith("service", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase).ToList();
+
     private ToolStripMenuItem BuildMiscMenu()
     {
-        var miscMenu = new ToolStripMenuItem("Прочее");
-
-        var autostartItem = new ToolStripMenuItem("Автозапуск")
+        var menu = new ToolStripMenuItem("Прочее");
+        var autostart = new ToolStripMenuItem("Автозапуск") { Checked = IsAutoStartEnabled() };
+        autostart.Click += (sender, _) =>
         {
-            Checked = IsAutoStartEnabled()
+            if (sender is not ToolStripMenuItem item) return;
+            var enabled = !item.Checked;
+            if (SetAutoStart(enabled)) item.Checked = enabled;
         };
-
-        autostartItem.Click += (s, _) =>
-        {
-            if (s is not ToolStripMenuItem item) return;
-
-            item.Checked = !item.Checked;
-            SetAutoStart(item.Checked);
-        };
-
-        miscMenu.DropDownItems.Add(autostartItem);
-        miscMenu.DropDownItems.Add("Проверить обновления", null, async (_, _) => await CheckForUpdatesAsync(silent: false));
-        miscMenu.DropDownItems.Add("Сбросить кеш Discord", null, (_, _) => ClearDiscordCache());
-        miscMenu.DropDownItems.Add("Открыть логи", null, (_, _) => OpenLogs());
-        miscMenu.DropDownItems.Add("Открыть папку", null, (_, _) => OpenFolder());
-
-        return miscMenu;
+        menu.DropDownItems.Add(autostart);
+        menu.DropDownItems.Add("Проверить обновления Zapret", null, async (_, _) => await CheckForUpdatesAsync());
+        menu.DropDownItems.Add("Сбросить кеш Discord", null, async (_, _) => await ClearDiscordCacheAsync());
+        menu.DropDownItems.Add("Открыть логи", null, (_, _) => OpenWithShell(_logFilePath));
+        menu.DropDownItems.Add("Открыть папку", null, (_, _) => OpenWithShell(_baseDir));
+        return menu;
     }
 
     private void LoadGeneralBats(ToolStripMenuItem root)
     {
-        root.DropDownItems.Clear();
-
-        var files = Directory
-            .GetFiles(_zapretDir, "general*.bat", SearchOption.TopDirectoryOnly)
-            .OrderBy(f => f);
-
-        foreach (var file in files)
+        foreach (var file in GetRootBatFiles().Where(path => Path.GetFileName(path).StartsWith("general", StringComparison.OrdinalIgnoreCase)))
         {
             var name = Path.GetFileName(file);
             root.DropDownItems.Add(name, null, (_, _) => RunBat(name));
         }
-
-        if (!files.Any())
-            root.DropDownItems.Add("(не найдено)").Enabled = false;
+        if (root.DropDownItems.Count == 0) root.DropDownItems.Add("(не найдено)").Enabled = false;
     }
 
     private void RunBat(string name)
     {
         var path = Path.Combine(_zapretDir, name);
-        if (!File.Exists(path)) return;
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = path,
-            WorkingDirectory = _baseDir,
-            UseShellExecute = true
-        });
+        if (!File.Exists(path)) { ShowError($"Файл стратегии не найден: {name}"); return; }
+        Process.Start(new ProcessStartInfo { FileName = path, WorkingDirectory = _zapretDir, UseShellExecute = true });
     }
 
     private string? GetInstalledServiceBat()
     {
         try
         {
-            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Services\zapret");
-
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\zapret");
             return key?.GetValue(ServiceRegValue) as string;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     private void RemoveService()
     {
         try
         {
-            RunAdmin("sc stop zapret");
-            RunAdmin("sc delete zapret");
-
-            RunAdmin("sc stop WinDivert");
-            RunAdmin("sc delete WinDivert");
-
-            RunAdmin("sc stop WinDivert14");
-            RunAdmin("sc delete WinDivert14");
-
-            RunAdmin("taskkill /IM winws.exe /F");
-
-            Microsoft.Win32.Registry.LocalMachine.DeleteSubKeyTree(
-                @"SYSTEM\CurrentControlSet\Services\zapret",
-                false
-            );
-
-            ShowSilent("Сервис zapret удалён", "Service");
-
+            // Не трогаем WinDivert и чужие winws.exe: они могут принадлежать другой программе.
+            RunAdminCommand("sc stop zapret >nul 2>&1 & sc delete zapret >nul 2>&1 & reg delete \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\zapret\" /v zapret-discord-youtube /f >nul 2>&1 & exit /b 0");
             UpdateServiceMenuChecks();
+            ShowNotification("Сервис zapret удалён.", "Zapret Tray");
         }
-        catch (Exception ex)
-        {
-            LogError("RemoveService", ex);
-            ShowSilent(ex.Message, "Ошибка");
-        }
+        catch (Exception ex) { LogError("RemoveService", ex); ShowError($"Не удалось удалить сервис zapret.\n\n{ex.Message}"); }
     }
 
     private void InstallServiceFromBat(string batName)
@@ -314,448 +218,232 @@ class TrayBatLauncher : ApplicationContext
         try
         {
             var batPath = Path.Combine(_zapretDir, batName);
-            if (!File.Exists(batPath))
-                throw new FileNotFoundException(batName);
+            var winwsPath = Path.Combine(_zapretDir, "bin", "winws.exe");
+            if (!File.Exists(batPath)) throw new FileNotFoundException("Файл стратегии не найден.", batPath);
+            if (!File.Exists(winwsPath)) throw new FileNotFoundException("Не найден winws.exe.", winwsPath);
 
-            var args = ParseWinwsArgs(batPath);
-            var bin = Path.Combine(_zapretDir, "bin", "winws.exe\\");
-
-            RunAdmin("net stop zapret");
-            RunAdmin("sc delete zapret");
-            var quotedBinPath = $"\"\\\"{bin}\" {args}\"";
-
-            RunAdmin(
-                $"sc create zapret binPath= {quotedBinPath} start= auto DisplayName= \"zapret\""
-            );
-
-
-            RunAdmin("sc description zapret \"Zapret DPI bypass software\"");
-            RunAdmin("sc start zapret");
-
-            using var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
-                @"SYSTEM\CurrentControlSet\Services\zapret");
-
-            key.SetValue(ServiceRegValue, Path.GetFileNameWithoutExtension(batName));
-
-            ShowSilent($"Сервис установлен из {batName}", "Service");
-
+            var args = ParseWinwsArgs(batPath).Replace("\"", "\\\"");
+            var create = $"sc create zapret binPath= \"\\\"{winwsPath}\\\" {args}\" start= auto DisplayName= \"zapret\"";
+            var registry = $"reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\zapret\" /v {ServiceRegValue} /t REG_SZ /d \"{Path.GetFileNameWithoutExtension(batName)}\" /f";
+            RunAdminCommand($"sc stop zapret >nul 2>&1 & sc delete zapret >nul 2>&1 & {create} && sc description zapret \"Zapret DPI bypass software\" && sc start zapret && {registry}");
             UpdateServiceMenuChecks();
+            ShowNotification($"Сервис установлен из {batName}.", "Zapret Tray");
         }
-        catch (Exception ex)
-        {
-            LogError("InstallServiceFromBat", ex);
-            ShowSilent(ex.Message, "Ошибка");
-        }
+        catch (Exception ex) { LogError("InstallServiceFromBat", ex); ShowError($"Не удалось установить сервис.\n\n{ex.Message}"); }
     }
 
     private string ParseWinwsArgs(string batPath)
     {
-        var binPath = Path.Combine(_zapretDir, "bin") + Path.DirectorySeparatorChar;
-        var listsPath = Path.Combine(_zapretDir, "lists") + Path.DirectorySeparatorChar;
-        var gameFilter = "12";
-
-        var sb = new StringBuilder();
-        bool found = false;
-
+        var arguments = new StringBuilder();
+        var capture = false;
         foreach (var raw in File.ReadLines(batPath))
         {
             var line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith("::"))
-                continue;
-
-            if (!found)
+            if (line.Length == 0 || line.StartsWith("::") || line.StartsWith("REM ", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!capture)
             {
-                var idx = line.IndexOf("winws.exe\"", StringComparison.OrdinalIgnoreCase);
-                if (idx < 0)
-                    continue;
-
-                found = true;
-                line = line[(idx + "winws.exe\"".Length)..];
+                var index = line.IndexOf("winws.exe\"", StringComparison.OrdinalIgnoreCase);
+                if (index < 0) continue;
+                capture = true;
+                line = line[(index + "winws.exe\"".Length)..];
             }
-
-            if (line.EndsWith("^"))
-                line = line[..^1];
-
-            sb.Append(' ');
-            sb.Append(line);
+            line = line.TrimEnd();
+            if (line.EndsWith('^')) line = line[..^1].TrimEnd();
+            if (line.Length > 0) arguments.Append(' ').Append(line);
         }
+        if (!capture) throw new InvalidOperationException("В выбранной стратегии не найдена команда запуска winws.exe.");
 
-        if (!found)
-            throw new Exception("winws.exe не найден в bat");
-
-        var result = sb.ToString()
-            .Replace("%BIN%", binPath)
-            .Replace("%LISTS%", listsPath)
-            .Replace("%GameFilter%", gameFilter);
-
-        result = System.Text.RegularExpressions.Regex.Replace(result, @"--(\S+?)=", "--$1 ");
-
-        result = result.Replace("\"", "\\\"");
-
-        result = result.Replace("^", "");
-
-        return result.Trim();
+        var bin = Path.Combine(_zapretDir, "bin") + Path.DirectorySeparatorChar;
+        var lists = Path.Combine(_zapretDir, "lists") + Path.DirectorySeparatorChar;
+        var (tcp, udp) = GetGameFilterPorts();
+        return arguments.ToString().Trim()
+            .Replace("%BIN%", bin, StringComparison.OrdinalIgnoreCase)
+            .Replace("%LISTS%", lists, StringComparison.OrdinalIgnoreCase)
+            .Replace("%GameFilterTCP%", tcp, StringComparison.OrdinalIgnoreCase)
+            .Replace("%GameFilterUDP%", udp, StringComparison.OrdinalIgnoreCase)
+            .Replace("%GameFilter%", tcp, StringComparison.OrdinalIgnoreCase)
+            .Replace("^", string.Empty);
     }
 
-
-    private void RunAdmin(string cmd)
+    private (string Tcp, string Udp) GetGameFilterPorts()
     {
-        var ps = $@"
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = 'cmd.exe'
-$psi.Arguments = '/c {cmd}'
-$psi.Verb = 'runas'
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$psi.UseShellExecute = $false
-$psi.CreateNoWindow = $true
-
-$p = New-Object System.Diagnostics.Process
-$p.StartInfo = $psi
-$p.Start() | Out-Null
-$p.WaitForExit()
-
-Write-Output 'EXIT=' + $p.ExitCode
-Write-Output $p.StandardOutput.ReadToEnd()
-Write-Output $p.StandardError.ReadToEnd()
-";
-
-        var tmp = Path.GetTempFileName() + ".ps1";
-        File.WriteAllText(tmp, ps);
-
-        var p = Process.Start(new ProcessStartInfo
+        const string disabled = "12";
+        var path = Path.Combine(_zapretDir, "utils", "game_filter.enabled");
+        if (!File.Exists(path)) return (disabled, disabled);
+        var values = File.ReadLines(path).Select(line => line.Split('=', 2)).Where(parts => parts.Length == 2)
+            .ToDictionary(parts => parts[0].Trim(), parts => parts[1].Trim(), StringComparer.OrdinalIgnoreCase);
+        values.TryGetValue("mode", out var mode);
+        values.TryGetValue("tcp", out var tcp);
+        values.TryGetValue("udp", out var udp);
+        tcp = IsValidPortRange(tcp) ? tcp! : "1024-65535";
+        udp = IsValidPortRange(udp) ? udp! : "1024-65535";
+        return mode?.ToLowerInvariant() switch
         {
-            FileName = "powershell.exe",
-            Arguments = $"-ExecutionPolicy Bypass -File \"{tmp}\"",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        });
-
-        var output = p!.StandardOutput.ReadToEnd();
-        var error = p.StandardError.ReadToEnd();
-        p.WaitForExit();
-
-        File.Delete(tmp);
+            "all" => (tcp, udp), "tcp" => (tcp, disabled), "udp" => (disabled, udp), _ => (disabled, disabled)
+        };
     }
 
+    private static bool IsValidPortRange(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        foreach (var item in value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var match = Regex.Match(item, "^(\\d+)(?:-(\\d+))?$");
+            if (!match.Success || !int.TryParse(match.Groups[1].Value, out var start) || start is < 1 or > 65535) return false;
+            var end = match.Groups[2].Success && int.TryParse(match.Groups[2].Value, out var parsed) ? parsed : start;
+            if (end is < 1 or > 65535 || start > end) return false;
+        }
+        return true;
+    }
+
+    private void RunAdminCommand(string command)
+    {
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "cmd.exe", Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden,
+            WorkingDirectory = _zapretDir, ArgumentList = { "/d", "/s", "/c", command }
+        }) ?? throw new InvalidOperationException("Не удалось запустить команду от имени администратора.");
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException($"Команда администратора завершилась с кодом {process.ExitCode}.");
+    }
 
     private void RunServiceBat()
     {
-        if (!File.Exists(_serviceBatPath))
-        {
-            ShowSilent("Файл service.bat не найден", "Ошибка");
-            return;
-        }
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = _serviceBatPath,
-            WorkingDirectory = _zapretDir,
-            UseShellExecute = true
-        });
+        if (!File.Exists(_serviceBatPath)) { ShowError("Файл service.bat не найден."); return; }
+        Process.Start(new ProcessStartInfo { FileName = _serviceBatPath, WorkingDirectory = _zapretDir, UseShellExecute = true });
     }
 
-    private async Task CheckForUpdatesAsync(bool silent = true)
+    private async Task CheckForUpdatesAsync()
     {
         try
         {
-            if (!File.Exists(_serviceBatPath))
-                return;
-
-            var process = new Process();
-            process.StartInfo.FileName = "cmd.exe";
-            process.StartInfo.Arguments = $"/c \"\"{_serviceBatPath}\" check_updates soft\"";
-            process.StartInfo.WorkingDirectory = _zapretDir;
-            process.StartInfo.CreateNoWindow = silent;
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.RedirectStandardOutput = true;
-
-            process.Start();
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-
-            if (!silent && output.Contains("New version available"))
+            var local = GetLocalVersion() ?? throw new InvalidOperationException("Не удалось определить установленную версию Zapret.");
+            var remote = (await _http.GetStringAsync(VersionUrl)).Trim();
+            if (string.IsNullOrWhiteSpace(remote)) throw new InvalidOperationException("GitHub вернул пустой номер версии.");
+            if (string.Equals(local, remote, StringComparison.OrdinalIgnoreCase))
             {
-                var result = AskSilent("Доступна новая версия. Скачать и обновить?", "Обновление");
-
-                if (result == DialogResult.Yes)
-                {
-                    await DownloadAndUpdateAsync();
-                }
+                ShowNotification($"Установлена актуальная версия Zapret ({local}).", "Zapret Tray");
+            }
+            else if (Ask($"Доступна версия Zapret {remote} (установлена {local}). Открыть официальную страницу релиза?", "Обновление Zapret") == DialogResult.Yes)
+            {
+                OpenWithShell($"{RepoUrl}/releases/tag/{Uri.EscapeDataString(remote)}");
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) { LogError("CheckForUpdatesAsync", ex); ShowError($"Не удалось проверить обновления Zapret.\n\n{ex.Message}"); }
+    }
+
+    private string? GetLocalVersion()
+    {
+        if (!File.Exists(_serviceBatPath)) return null;
+        foreach (var line in File.ReadLines(_serviceBatPath))
         {
-            LogError("CheckForUpdatesAsync", ex);
-
-            if (!silent)
-            {
-                ShowSilent($"Ошибка при проверке обновлений: {ex.Message}", "Ошибка");
-            }
+            var match = Regex.Match(line, "^set \\\"LOCAL_VERSION=(.+?)\\\"$", RegexOptions.IgnoreCase);
+            if (match.Success) return match.Groups[1].Value.Trim();
         }
+        return null;
     }
 
     private void UpdateServiceMenuChecks()
     {
-        if (_installServiceMenu == null)
-            return;
-
-        var currentBat = GetInstalledServiceBat();
-
-        foreach (ToolStripMenuItem item in _installServiceMenu.DropDownItems)
-        {
-            item.Checked = Path.GetFileNameWithoutExtension(item.Text) == currentBat;
-        }
-    }
-
-
-    private async Task DownloadAndUpdateAsync()
-    {
-        try
-        {
-            var tempPath = Path.Combine(Path.GetTempPath(), "zapret_update");
-            if (Directory.Exists(tempPath))
-                Directory.Delete(tempPath, true);
-
-            Directory.CreateDirectory(tempPath);
-
-            var zipUrl = $"{_repoUrl}/archive/refs/heads/main.zip";
-            var zipPath = Path.Combine(tempPath, "update.zip");
-
-            using (var httpClient = new HttpClient())
-            {
-                httpClient.Timeout = TimeSpan.FromMinutes(5);
-
-                var response = await httpClient.GetAsync(zipUrl);
-                if (!response.IsSuccessStatusCode)
-                    throw new Exception($"Ошибка загрузки: {response.StatusCode}");
-
-                await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    await response.Content.CopyToAsync(fileStream);
-                }
-            }
-
-            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tempPath, true);
-
-            var extractedDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
-            if (!Directory.Exists(extractedDir))
-                throw new Exception("Не удалось найти распакованные файлы");
-
-            var exeName = Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName);
-
-            foreach (var file in Directory.GetFiles(extractedDir, "*", SearchOption.AllDirectories))
-            {
-                var relativePath = file[(extractedDir.Length + 1)..];
-                var destPath = Path.Combine(_zapretDir, relativePath);
-
-                if (Path.GetFileName(file).Equals(exeName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var destDir = Path.GetDirectoryName(destPath);
-                if (!Directory.Exists(destDir))
-                    Directory.CreateDirectory(destDir);
-
-                File.Copy(file, destPath, true);
-            }
-
-            ShowSilent("Обновление успешно завершено. Перезапустите приложение для применения изменений.", "Обновление");
-        }
-        catch (Exception ex)
-        {
-            LogError("DownloadAndUpdateAsync", ex);
-
-            ShowSilent($"Ошибка при обновлении: {ex.Message}", "Ошибка");
-        }
+        if (_installServiceMenu == null) return;
+        var current = GetInstalledServiceBat();
+        foreach (var item in _installServiceMenu.DropDownItems.OfType<ToolStripMenuItem>())
+            item.Checked = string.Equals(Path.GetFileNameWithoutExtension(item.Text), current, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsAutoStartEnabled()
     {
         try
         {
-            var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
-                false);
-
-            if (key == null) return false;
-
-            var value = key.GetValue("ZapretTrayLauncher") as string;
-            key.Close();
-
-            return !string.IsNullOrEmpty(value) &&
-                   value.Equals($"\"{Application.ExecutablePath}\"", StringComparison.OrdinalIgnoreCase);
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", false);
+            return string.Equals(key?.GetValue("ZapretTrayLauncher") as string, $"\"{Application.ExecutablePath}\"", StringComparison.OrdinalIgnoreCase);
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 
-    private void SetAutoStart(bool enabled = true)
+    private bool SetAutoStart(bool enabled)
     {
         try
         {
-            var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
-                true);
-
-            if (key == null) return;
-
-            if (enabled)
-            {
-                key.SetValue("ZapretTrayLauncher", $"\"{Application.ExecutablePath}\"");
-            }
-            else
-            {
-                key.DeleteValue("ZapretTrayLauncher", false);
-            }
-
-            key.Close();
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true)
+                ?? throw new InvalidOperationException("Не удалось открыть настройки автозапуска Windows.");
+            if (enabled) key.SetValue("ZapretTrayLauncher", $"\"{Application.ExecutablePath}\"");
+            else key.DeleteValue("ZapretTrayLauncher", false);
+            ShowNotification(enabled ? "Автозапуск включён." : "Автозапуск выключен.", "Zapret Tray");
+            return true;
         }
-        catch (Exception ex)
-        {
-            LogError("SetAutoStart", ex);
-
-            ShowSilent($"Ошибка при настройке автозапуска: {ex.Message}", "Ошибка");
-        }
+        catch (Exception ex) { LogError("SetAutoStart", ex); ShowError($"Не удалось изменить автозапуск.\n\n{ex.Message}"); return false; }
     }
 
-    private void ClearDiscordCache()
+    private async Task ClearDiscordCacheAsync()
     {
+        if (Ask("Discord будет закрыт, а его кеш очищен. Несохранённые данные в Discord могут быть потеряны. Продолжить?", "Очистка кеша Discord") != DialogResult.Yes) return;
         try
         {
-            var discordProcesses = Process.GetProcessesByName("Discord");
-
-            if (discordProcesses.Length > 0)
+            var installations = new[] { ("Discord", "Discord"), ("DiscordPTB", "discordptb"), ("DiscordCanary", "discordcanary"), ("DiscordDevelopment", "discorddevelopment") };
+            foreach (var installation in installations)
+            foreach (var process in Process.GetProcessesByName(installation.Item1))
             {
-                foreach (var discordProcess in discordProcesses)
+                using (process)
                 {
-                    try
-                    {
-                        discordProcess.Kill();
-                        discordProcess.WaitForExit(5000);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError("ClearDiscordCache", ex);
-                    }
-                }
-
-                Thread.Sleep(2000);
-            }
-
-            string[] paths =
-            [
-                Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\Cache"),
-                Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\Code Cache"),
-                Environment.ExpandEnvironmentVariables("%AppData%\\Discord\\GPUCache"),
-            ];
-
-            var success = true;
-            var failedPaths = new List<string>();
-
-            foreach (var p in paths)
-            {
-                if (!Directory.Exists(p)) continue;
-
-                try
-                {
-                    Directory.Delete(p, true);
-                }
-                catch (Exception)
-                {
-                    success = false;
-                    failedPaths.Add(p);
+                    process.Kill();
+                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                 }
             }
-
-            if (success)
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            var removed = 0;
+            foreach (var installation in installations)
             {
-                ShowSilent("Кеш Discord успешно очищен", "OK");
+                var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), installation.Item2);
+                foreach (var cache in new[] { "Cache", "Code Cache", "GPUCache" })
+                {
+                    var path = Path.Combine(root, cache);
+                    if (!Directory.Exists(path)) continue;
+                    Directory.Delete(path, true);
+                    removed++;
+                }
             }
-            else
-            {
-                MessageBox.Show($"Частично очищено. Не удалось очистить:\n{string.Join("\n", failedPaths)}",
-                    "Внимание",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
+            ShowNotification(removed > 0 ? "Кеш Discord очищен." : "Папки кеша Discord не найдены.", "Zapret Tray");
         }
-        catch (Exception ex)
-        {
-            LogError("ClearDiscordCache", ex);
-
-            ShowSilent($"Ошибка при очистке кеша: {ex.Message}", "Ошибка");
-        }
+        catch (Exception ex) { LogError("ClearDiscordCacheAsync", ex); ShowError($"Не удалось полностью очистить кеш Discord.\n\n{ex.Message}"); }
     }
 
-    private void ShowSilent(string text, string caption)
+    private void ShowNotification(string text, string title)
     {
-        MessageBox.Show(
-            text,
-            caption,
-            MessageBoxButtons.OK,
-            MessageBoxIcon.None
-        );
+        _notifyIcon.BalloonTipTitle = title;
+        _notifyIcon.BalloonTipText = text;
+        _notifyIcon.BalloonTipIcon = ToolTipIcon.Info;
+        _notifyIcon.ShowBalloonTip(3000);
     }
 
-    private DialogResult AskSilent(string text, string caption)
-    {
-        return MessageBox.Show(
-            text,
-            caption,
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.None
-        );
-    }
-
+    private static void OpenWithShell(string path) => Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+    private static void ShowError(string text) => MessageBox.Show(text, "Zapret Tray — ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    private static DialogResult Ask(string text, string title) => MessageBox.Show(text, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
     private void Exit()
     {
-        _updateTimer.Stop();
-        _updateTimer.Dispose();
+        _notifyIcon.Visible = false;
+        _notifyIcon.Dispose();
+        _http.Dispose();
         Application.Exit();
     }
 
     [STAThread]
-    static void Main()
+    private static void Main()
     {
-        bool created;
-
-        _mutex = new Mutex(true, MutexName, out created);
-
+        _mutex = new Mutex(true, MutexName, out var created);
         if (!created)
         {
-            try
-            {
-                using var exitEvent = EventWaitHandle.OpenExisting(ExitEventName);
-                exitEvent.Set();
-            }
-            catch
-            {
-            }
-
+            try { using var exitEvent = EventWaitHandle.OpenExisting(ExitEventName); exitEvent.Set(); }
+            catch { }
             _mutex.WaitOne();
         }
-
         _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
-
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-
-        var ctx = new TrayBatLauncher();
-
-        Task.Run(() =>
-        {
-            _exitEvent.WaitOne();
-            ctx.Exit();
-        });
-
-        Application.Run(ctx);
-
+        using var context = new TrayBatLauncher();
+        Task.Run(() => { _exitEvent.WaitOne(); context.Exit(); });
+        Application.Run(context);
         _mutex.ReleaseMutex();
     }
-
 }
