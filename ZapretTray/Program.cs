@@ -13,7 +13,7 @@ class TrayBatLauncher : ApplicationContext
     private const string MutexName = "ZapretTray_SingleInstance_Mutex";
     private const string ExitEventName = "ZapretTray_Exit_Old_Instance";
 
-    private readonly string _baseDir = AppDomain.CurrentDomain.BaseDirectory;
+    private readonly string _baseDir = GetApplicationDirectory();
     private readonly string _zapretDir;
     private readonly string _serviceBatPath;
     private readonly string _logFilePath;
@@ -225,7 +225,7 @@ class TrayBatLauncher : ApplicationContext
             var args = ParseWinwsArgs(batPath).Replace("\"", "\\\"");
             var create = $"sc create zapret binPath= \"\\\"{winwsPath}\\\" {args}\" start= auto DisplayName= \"zapret\"";
             var registry = $"reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\zapret\" /v {ServiceRegValue} /t REG_SZ /d \"{Path.GetFileNameWithoutExtension(batName)}\" /f";
-            RunAdminCommand($"sc stop zapret >nul 2>&1 & sc delete zapret >nul 2>&1 & {create} && sc description zapret \"Zapret DPI bypass software\" && sc start zapret && {registry}");
+            RunAdminCommand($"sc stop zapret >nul 2>&1 & timeout /t 2 /nobreak >nul & sc delete zapret >nul 2>&1 & timeout /t 2 /nobreak >nul & {create} && sc description zapret \"Zapret DPI bypass software\" && (sc start zapret >nul 2>&1 || sc query zapret | findstr /I /C:\"RUNNING\" >nul) && {registry}");
             UpdateServiceMenuChecks();
             ShowNotification($"Сервис установлен из {batName}.", "Zapret Tray");
         }
@@ -298,13 +298,32 @@ class TrayBatLauncher : ApplicationContext
 
     private void RunAdminCommand(string command)
     {
-        using var process = Process.Start(new ProcessStartInfo
+        var outputPath = Path.Combine(Path.GetTempPath(), $"ZapretTray-admin-{Guid.NewGuid():N}.log");
+        try
         {
-            FileName = "cmd.exe", Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden,
-            WorkingDirectory = _zapretDir, ArgumentList = { "/d", "/s", "/c", command }
-        }) ?? throw new InvalidOperationException("Не удалось запустить команду от имени администратора.");
-        process.WaitForExit();
-        if (process.ExitCode != 0) throw new InvalidOperationException($"Команда администратора завершилась с кодом {process.ExitCode}.");
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd.exe", Verb = "runas", UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden,
+                WorkingDirectory = _zapretDir, ArgumentList = { "/d", "/s", "/c", $"({command}) > \"{outputPath}\" 2>&1" }
+            }) ?? throw new InvalidOperationException("Не удалось запустить команду от имени администратора.");
+            process.WaitForExit();
+            if (process.ExitCode == 0) return;
+
+            var output = File.Exists(outputPath) ? File.ReadAllText(outputPath).Trim() : "Вывод команды недоступен.";
+            throw new InvalidOperationException($"Команда администратора завершилась с кодом {process.ExitCode}.{Environment.NewLine}{output}");
+        }
+        finally
+        {
+            try { File.Delete(outputPath); }
+            catch { }
+        }
+    }
+
+    private static string GetApplicationDirectory()
+    {
+        var executablePath = Environment.ProcessPath;
+        var directory = string.IsNullOrWhiteSpace(executablePath) ? null : Path.GetDirectoryName(executablePath);
+        return string.IsNullOrWhiteSpace(directory) ? AppDomain.CurrentDomain.BaseDirectory : directory;
     }
 
     private void RunServiceBat()
