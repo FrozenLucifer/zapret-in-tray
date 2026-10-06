@@ -14,9 +14,11 @@ class TrayBatLauncher : ApplicationContext
     private const string ExitEventName = "ZapretTray_Exit_Old_Instance";
 
     private readonly string _baseDir = AppDomain.CurrentDomain.BaseDirectory;
+    private readonly string _appDataDir;
     private readonly string _zapretDir;
     private readonly string _serviceBatPath;
     private readonly string _logFilePath;
+    
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly NotifyIcon _notifyIcon;
     private ToolStripMenuItem? _installServiceMenu;
@@ -26,16 +28,24 @@ class TrayBatLauncher : ApplicationContext
 
     private TrayBatLauncher()
     {
-        _zapretDir = Path.Combine(_baseDir, "zapret-discord");
+        _appDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZapretTray");
+
+        _zapretDir = Path.Combine(_appDataDir, "zapret-discord");
         _serviceBatPath = Path.Combine(_zapretDir, "service.bat");
-        _logFilePath = Path.Combine(_baseDir, "tray_errors.log");
+        _logFilePath = Path.Combine(_appDataDir, "tray_errors.log");
+
+        Directory.CreateDirectory(_appDataDir);
+
         EnsureLogFileExists();
         EnsureZapretExistsAsync().GetAwaiter().GetResult();
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = new Icon(Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTray.Resources.tray.ico") ??
-                            throw new InvalidOperationException("Не удалось загрузить значок приложения.")),
+            Icon = new Icon(
+                Assembly.GetExecutingAssembly().GetManifestResourceStream("ZapretTray.Resources.tray.ico")
+                ?? throw new InvalidOperationException("Не удалось загрузить значок приложения.")),
             ContextMenuStrip = BuildMenu(),
             Text = "Zapret Tray",
             Visible = true
@@ -56,38 +66,70 @@ class TrayBatLauncher : ApplicationContext
         }
     }
 
-    private async Task EnsureZapretExistsAsync()
+private async Task EnsureZapretExistsAsync()
+{
+    if (File.Exists(_serviceBatPath))
+        return;
+
+    var tempPath = Path.Combine(
+        Path.GetTempPath(),
+        "ZapretTray",
+        Guid.NewGuid().ToString("N"));
+
+    try
     {
-        if (File.Exists(_serviceBatPath)) return;
+        Directory.CreateDirectory(_zapretDir);
+        Directory.CreateDirectory(tempPath);
 
-        var tempPath = Path.Combine(Path.GetTempPath(), "ZapretTray", Guid.NewGuid().ToString("N"));
+        var zipPath = Path.Combine(tempPath, "zapret.zip");
 
-        try
+        using var response = await _http.GetAsync(
+            $"{RepoUrl}/archive/refs/heads/main.zip",
+            HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        await using (var file = new FileStream(
+            zipPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None))
         {
-            Directory.CreateDirectory(_zapretDir);
-            Directory.CreateDirectory(tempPath);
-            var zipPath = Path.Combine(tempPath, "zapret.zip");
-            using var response = await _http.GetAsync($"{RepoUrl}/archive/refs/heads/main.zip");
-            response.EnsureSuccessStatusCode();
-            await using (var file = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                await response.Content.CopyToAsync(file);
+            await response.Content.CopyToAsync(file);
+        }
 
-            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tempPath);
-            var sourceDir = Path.Combine(tempPath, "zapret-discord-youtube-main");
-            if (!Directory.Exists(sourceDir)) throw new InvalidOperationException("Не удалось распаковать архив zapret.");
+        System.IO.Compression.ZipFile.ExtractToDirectory(
+            zipPath,
+            tempPath);
 
-            CopyDirectory(sourceDir, _zapretDir);
-        }
-        catch (Exception ex)
-        {
-            LogError("EnsureZapretExistsAsync", ex);
-            ShowError($"Не удалось загрузить zapret. Проверьте подключение к GitHub и повторите запуск.\n\n{ex.Message}");
-        }
-        finally
-        {
-            TryDeleteDirectory(tempPath);
-        }
+        var sourceDir = Path.Combine(
+            tempPath,
+            "zapret-discord-youtube-main");
+
+        if (!Directory.Exists(sourceDir))
+            throw new InvalidOperationException(
+                $"После распаковки не найдена папка:\n{sourceDir}");
+
+        CopyDirectory(sourceDir, _zapretDir);
+
+        if (!File.Exists(_serviceBatPath))
+            throw new InvalidOperationException(
+                $"После копирования не найден service.bat:\n{_serviceBatPath}");
     }
+    catch (Exception ex)
+    {
+        LogError("EnsureZapretExistsAsync ERROR", ex);
+
+        ShowError(
+            $"Не удалось загрузить zapret.\n\n" +
+            $"{ex.GetType().Name}\n" +
+            $"{ex.Message}\n\n" +
+            $"Подробности записаны в:\n{_logFilePath}");
+    }
+    finally
+    {
+        TryDeleteDirectory(tempPath);
+    }
+}
 
     private static void CopyDirectory(string sourceDir, string destinationDir)
     {
@@ -192,7 +234,7 @@ class TrayBatLauncher : ApplicationContext
         menu.DropDownItems.Add("Проверить обновления Zapret", null, async (_, _) => await CheckForUpdatesAsync());
         menu.DropDownItems.Add("Сбросить кеш Discord", null, async (_, _) => await ClearDiscordCacheAsync());
         menu.DropDownItems.Add("Открыть логи", null, (_, _) => OpenWithShell(_logFilePath));
-        menu.DropDownItems.Add("Открыть папку", null, (_, _) => OpenWithShell(_baseDir));
+        menu.DropDownItems.Add("Открыть папку", null, (_, _) => OpenWithShell(_appDataDir));
         return menu;
     }
 
